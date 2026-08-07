@@ -3,6 +3,64 @@ import { ASK_AI_ABSURD_PROMPTS } from './absurdPrompts';
 import { handleShare } from './share';
 
 const referers = ['https://getdagnis-1.vercel.app', 'https://getdagnis-2.vercel.app', 'https://getdagnis-3.vercel.app'];
+const TEAM_VOTE_OPTIONS = new Set(['ok', 'perfect']);
+
+const jsonHeaders = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*',
+};
+
+async function ensureTeamVotesTable(env) {
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS team_votes (
+      vote TEXT PRIMARY KEY CHECK (vote IN ('ok', 'perfect')),
+      count INTEGER NOT NULL DEFAULT 0
+    )`
+  ).run();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT OR IGNORE INTO team_votes (vote, count) VALUES ('ok', 0)`),
+    env.DB.prepare(`INSERT OR IGNORE INTO team_votes (vote, count) VALUES ('perfect', 0)`),
+  ]);
+}
+
+async function handleTeamVotes(request, env) {
+  await ensureTeamVotesTable(env);
+
+  if (request.method === 'GET') {
+    const { results } = await env.DB.prepare(`SELECT vote, count FROM team_votes`).all();
+    const counts = results.reduce((current, row) => ({ ...current, [row.vote]: Number(row.count) || 0 }), {
+      ok: 0,
+      perfect: 0,
+    });
+    return new Response(JSON.stringify(counts), { headers: jsonHeaders });
+  }
+
+  if (request.method === 'POST') {
+    let vote;
+    try {
+      ({ vote } = await request.json());
+    } catch {
+      return new Response(JSON.stringify({ error: 'Invalid request.' }), { status: 400, headers: jsonHeaders });
+    }
+
+    if (!TEAM_VOTE_OPTIONS.has(vote)) {
+      return new Response(JSON.stringify({ error: 'Invalid team vote.' }), { status: 400, headers: jsonHeaders });
+    }
+
+    await env.DB.prepare(`UPDATE team_votes SET count = count + 1 WHERE vote = ?`).bind(vote).run();
+    const { results } = await env.DB.prepare(`SELECT vote, count FROM team_votes`).all();
+    const counts = results.reduce((current, row) => ({ ...current, [row.vote]: Number(row.count) || 0 }), {
+      ok: 0,
+      perfect: 0,
+    });
+    return new Response(JSON.stringify(counts), { headers: jsonHeaders });
+  }
+
+  return new Response(JSON.stringify({ error: 'Method not allowed.' }), {
+    status: 405,
+    headers: { ...jsonHeaders, Allow: 'GET, POST, OPTIONS' },
+  });
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -24,6 +82,9 @@ export default {
       return new Response(JSON.stringify(results), {
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
       });
+    }
+    if (url.pathname === '/team-votes') {
+      return handleTeamVotes(request, env);
     }
     if (url.pathname === '/share' && request.method === 'POST') {
       return handleShare(request, env);
