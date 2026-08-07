@@ -10,6 +10,25 @@ const jsonHeaders = {
   'Access-Control-Allow-Origin': '*',
 };
 
+function getDeviceType(userAgent = '') {
+  if (/iPad/i.test(userAgent)) return 'tablet/ipad';
+  if (/Android/i.test(userAgent)) return /Mobile/i.test(userAgent) ? 'phone/android' : 'tablet/android';
+  if (/iPhone/i.test(userAgent)) return 'phone/iphone';
+  if (/Windows/i.test(userAgent)) return 'computer/windows';
+  if (/Macintosh|Mac OS X/i.test(userAgent)) return 'computer/mac';
+  if (/Linux/i.test(userAgent)) return 'computer/linux';
+  return 'other';
+}
+
+function isLocalhostOrigin(origin) {
+  try {
+    const hostname = origin ? new URL(origin).hostname : '';
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
 async function ensureTeamVotesTable(env) {
   await env.DB.prepare(
     `CREATE TABLE IF NOT EXISTS team_votes (
@@ -21,6 +40,17 @@ async function ensureTeamVotesTable(env) {
     env.DB.prepare(`INSERT OR IGNORE INTO team_votes (vote, count) VALUES ('ok', 0)`),
     env.DB.prepare(`INSERT OR IGNORE INTO team_votes (vote, count) VALUES ('perfect', 0)`),
   ]);
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS team_vote_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      vote TEXT NOT NULL CHECK (vote IN ('ok', 'perfect')),
+      duration_ms INTEGER NOT NULL,
+      visitor_id TEXT,
+      country TEXT,
+      device TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`
+  ).run();
 }
 
 async function handleTeamVotes(request, env) {
@@ -36,9 +66,18 @@ async function handleTeamVotes(request, env) {
   }
 
   if (request.method === 'POST') {
+    if (isLocalhostOrigin(request.headers.get('Origin'))) {
+      return new Response(JSON.stringify({ error: 'Team votes are disabled on localhost.' }), {
+        status: 403,
+        headers: jsonHeaders,
+      });
+    }
+
     let vote;
+    let durationMs;
+    let visitorId;
     try {
-      ({ vote } = await request.json());
+      ({ vote, durationMs, visitorId } = await request.json());
     } catch {
       return new Response(JSON.stringify({ error: 'Invalid request.' }), { status: 400, headers: jsonHeaders });
     }
@@ -47,7 +86,22 @@ async function handleTeamVotes(request, env) {
       return new Response(JSON.stringify({ error: 'Invalid team vote.' }), { status: 400, headers: jsonHeaders });
     }
 
-    await env.DB.prepare(`UPDATE team_votes SET count = count + 1 WHERE vote = ?`).bind(vote).run();
+    const normalizedDurationMs = Number(durationMs);
+    if (!Number.isFinite(normalizedDurationMs) || normalizedDurationMs < 0) {
+      return new Response(JSON.stringify({ error: 'Invalid vote duration.' }), { status: 400, headers: jsonHeaders });
+    }
+
+    const normalizedVisitorId = typeof visitorId === 'string' ? visitorId.slice(0, 100) : null;
+    const country = request.cf?.country || null;
+    const device = getDeviceType(request.headers.get('User-Agent') || '');
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO team_vote_events (vote, duration_ms, visitor_id, country, device)
+         VALUES (?, ?, ?, ?, ?)`
+      ).bind(vote, Math.round(normalizedDurationMs), normalizedVisitorId, country, device),
+      env.DB.prepare(`UPDATE team_votes SET count = count + 1 WHERE vote = ?`).bind(vote),
+    ]);
     const { results } = await env.DB.prepare(`SELECT vote, count FROM team_votes`).all();
     const counts = results.reduce((current, row) => ({ ...current, [row.vote]: Number(row.count) || 0 }), {
       ok: 0,
