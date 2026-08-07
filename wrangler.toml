@@ -1,0 +1,8 @@
+name = "getdagnis-worker-prod"
+main = "src/index.js"
+compatibility_date = "2026-01-06"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "getdagnis-db"
+database_id = "5240cfc7-8fbf-4990-8d07-1887515b3dac"
