@@ -6,9 +6,33 @@ import { getVisitorIdentity } from './visitorIdentity';
 export const CLOUDFLARE_MODEL = '@cf/zai-org/glm-4.7-flash';
 const TEAM_VOTE_OPTIONS = new Set(['ok', 'perfect']);
 const ARCHIVE_PROJECT_KEYS = new Set([
-  'yearbook', 'reformu', 'open', '5g', 'binders', 'summer', 'positivus', 'haemo', 'api',
-  'bb-wake', 'royal', 'sporta', 'var', 'lapas', 'latvija', 'rsu', 'saistoss', 'maritec',
-  'creative', 'survival', 'guw', 'useless', 'kiki', 'urban', 'zagars', 'gagarin', 'atlant',
+  'yearbook',
+  'reformu',
+  'open',
+  '5g',
+  'binders',
+  'summer',
+  'positivus',
+  'haemo',
+  'api',
+  'bb-wake',
+  'royal',
+  'sporta',
+  'var',
+  'lapas',
+  'latvija',
+  'rsu',
+  'saistoss',
+  'maritec',
+  'creative',
+  'survival',
+  'guw',
+  'useless',
+  'kiki',
+  'urban',
+  'zagars',
+  'gagarin',
+  'atlant',
 ]);
 
 const jsonHeaders = {
@@ -40,7 +64,7 @@ async function ensureTeamVotesTable(env) {
     `CREATE TABLE IF NOT EXISTS team_votes (
       vote TEXT PRIMARY KEY CHECK (vote IN ('ok', 'perfect')),
       count INTEGER NOT NULL DEFAULT 0
-    )`
+    )`,
   ).run();
   await env.DB.batch([
     env.DB.prepare(`INSERT OR IGNORE INTO team_votes (vote, count) VALUES ('ok', 0)`),
@@ -56,7 +80,7 @@ async function ensureTeamVotesTable(env) {
       device TEXT NOT NULL,
       visitor_alias TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )`
+    )`,
   ).run();
   try {
     await env.DB.prepare('ALTER TABLE team_vote_events ADD COLUMN visitor_alias TEXT').run();
@@ -111,7 +135,7 @@ async function handleTeamVotes(request, env) {
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO team_vote_events (vote, duration_ms, visitor_id, country, device, visitor_alias)
-         VALUES (?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?)`,
       ).bind(vote, Math.round(normalizedDurationMs), normalizedVisitorId, country, device, `${color} ${alias}`),
       env.DB.prepare(`UPDATE team_votes SET count = count + 1 WHERE vote = ?`).bind(vote),
     ]);
@@ -134,7 +158,7 @@ async function ensureArchiveVotesTable(env) {
     `CREATE TABLE IF NOT EXISTS archive_votes (
       project_key TEXT PRIMARY KEY,
       count INTEGER NOT NULL DEFAULT 0
-    )`
+    )`,
   ).run();
 }
 
@@ -149,7 +173,7 @@ async function ensureArchiveCommentsTable(env) {
       device TEXT NOT NULL,
       timezone TEXT,
       submitted_at_riga TEXT NOT NULL
-    )`
+    )`,
   ).run();
 }
 
@@ -199,8 +223,10 @@ async function handleArchiveVotes(request, env) {
 
   await env.DB.prepare(
     `INSERT INTO archive_votes (project_key, count) VALUES (?, 1)
-     ON CONFLICT(project_key) DO UPDATE SET count = archive_votes.count + 1`
-  ).bind(projectKey).run();
+     ON CONFLICT(project_key) DO UPDATE SET count = archive_votes.count + 1`,
+  )
+    .bind(projectKey)
+    .run();
 
   return new Response(JSON.stringify({ success: true }), { headers: jsonHeaders });
 }
@@ -240,15 +266,20 @@ async function handleArchiveComments(request, env) {
   await env.DB.prepare(
     `INSERT INTO archive_comments
       (project_key, reason, email, country, device, timezone, submitted_at_riga)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(projectKey, normalizedReason, normalizedEmail, country, device, normalizedTimezone, submittedAt).run();
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(projectKey, normalizedReason, normalizedEmail, country, device, normalizedTimezone, submittedAt)
+    .run();
 
-  return new Response(JSON.stringify({
-    success: true,
-    country,
-    device,
-    submittedAt,
-  }), { headers: jsonHeaders });
+  return new Response(
+    JSON.stringify({
+      success: true,
+      country,
+      device,
+      submittedAt,
+    }),
+    { headers: jsonHeaders },
+  );
 }
 
 export default {
@@ -266,7 +297,7 @@ export default {
     }
     if (url.pathname === '/shared' && request.method === 'GET') {
       const { results } = await env.DB.prepare(
-        `SELECT id,content,absurdity_level,alias,color,img_url,country,created_at,type FROM shared_responses ORDER BY created_at DESC`
+        `SELECT id,content,absurdity_level,alias,color,img_url,country,created_at,type FROM shared_responses ORDER BY created_at DESC`,
       ).all();
       return new Response(JSON.stringify(results), {
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
@@ -291,7 +322,7 @@ export default {
         if (!absurdPrompt) {
           console.error(
             'Available levels:',
-            ASK_AI_ABSURD_PROMPTS.map((p) => p.absurdityLevel)
+            ASK_AI_ABSURD_PROMPTS.map((p) => p.absurdityLevel),
           );
           return new Response(JSON.stringify({ error: 'Invalid absurdity level.' }), {
             status: 400,
