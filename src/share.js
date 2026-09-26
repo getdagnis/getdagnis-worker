@@ -1,10 +1,16 @@
+import { getVisitorIdentity } from './visitorIdentity';
+
 export async function handleShare(request, env) {
-  const { content, absurdity } = await request.json();
+  const { content, absurdity, visitorId } = await request.json();
+  if (typeof content !== 'string' || !content.trim() || !Number.isFinite(Number(absurdity))) {
+    return new Response(JSON.stringify({ error: 'Invalid shared response.' }), { status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+  }
 
-  const ip = request.headers.get("cf-connecting-ip") || "unknown";
-  const country = request.headers.get("cf-ipcountry") || "ZZ";
-
-  const { alias, color, img_url } = await getAliasColorFromIP(ip);
+  const visitorKey = typeof visitorId === 'string' && visitorId.trim()
+    ? visitorId.slice(0, 100)
+    : request.headers.get('cf-connecting-ip') || crypto.randomUUID();
+  const country = request.cf?.country || request.headers.get('cf-ipcountry') || 'ZZ';
+  const { alias, color, img_url } = await getVisitorIdentity(visitorKey, env);
   const createdAt = new Date().toISOString();
 
   await env.DB.prepare(
@@ -12,7 +18,7 @@ export async function handleShare(request, env) {
      (content, absurdity_level, ip, country, alias, color, img_url, created_at, type)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(content, absurdity, ip, country, alias, color, img_url, createdAt, "about")
+    .bind(content, absurdity, null, country, alias, color, img_url, createdAt, 'about')
     .run();
 
   return new Response(JSON.stringify({ success: true }), {

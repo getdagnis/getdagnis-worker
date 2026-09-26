@@ -1,9 +1,15 @@
 import { ASK_AI_PROMPT_DATA } from './prompt';
 import { ASK_AI_ABSURD_PROMPTS } from './absurdPrompts';
 import { handleShare } from './share';
+import { getVisitorIdentity } from './visitorIdentity';
 
-const referers = ['https://getdagnis-1.vercel.app', 'https://getdagnis-2.vercel.app', 'https://getdagnis-3.vercel.app'];
+export const CLOUDFLARE_MODEL = '@cf/zai-org/glm-4.7-flash';
 const TEAM_VOTE_OPTIONS = new Set(['ok', 'perfect']);
+const ARCHIVE_PROJECT_KEYS = new Set([
+  'yearbook', 'reformu', 'open', '5g', 'binders', 'summer', 'positivus', 'haemo', 'api',
+  'bb-wake', 'royal', 'sporta', 'var', 'lapas', 'latvija', 'rsu', 'saistoss', 'maritec',
+  'creative', 'survival', 'guw', 'useless', 'kiki', 'urban', 'zagars', 'gagarin', 'atlant',
+]);
 
 const jsonHeaders = {
   'Content-Type': 'application/json',
@@ -48,9 +54,15 @@ async function ensureTeamVotesTable(env) {
       visitor_id TEXT,
       country TEXT,
       device TEXT NOT NULL,
+      visitor_alias TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`
   ).run();
+  try {
+    await env.DB.prepare('ALTER TABLE team_vote_events ADD COLUMN visitor_alias TEXT').run();
+  } catch {
+    // The column already exists on databases initialized before this version.
+  }
 }
 
 async function handleTeamVotes(request, env) {
@@ -94,12 +106,13 @@ async function handleTeamVotes(request, env) {
     const normalizedVisitorId = typeof visitorId === 'string' ? visitorId.slice(0, 100) : null;
     const country = request.cf?.country || null;
     const device = getDeviceType(request.headers.get('User-Agent') || '');
+    const { alias, color } = await getVisitorIdentity(normalizedVisitorId || crypto.randomUUID(), env);
 
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO team_vote_events (vote, duration_ms, visitor_id, country, device)
-         VALUES (?, ?, ?, ?, ?)`
-      ).bind(vote, Math.round(normalizedDurationMs), normalizedVisitorId, country, device),
+        `INSERT INTO team_vote_events (vote, duration_ms, visitor_id, country, device, visitor_alias)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).bind(vote, Math.round(normalizedDurationMs), normalizedVisitorId, country, device, `${color} ${alias}`),
       env.DB.prepare(`UPDATE team_votes SET count = count + 1 WHERE vote = ?`).bind(vote),
     ]);
     const { results } = await env.DB.prepare(`SELECT vote, count FROM team_votes`).all();
@@ -114,6 +127,128 @@ async function handleTeamVotes(request, env) {
     status: 405,
     headers: { ...jsonHeaders, Allow: 'GET, POST, OPTIONS' },
   });
+}
+
+async function ensureArchiveVotesTable(env) {
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS archive_votes (
+      project_key TEXT PRIMARY KEY,
+      count INTEGER NOT NULL DEFAULT 0
+    )`
+  ).run();
+}
+
+async function ensureArchiveCommentsTable(env) {
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS archive_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_key TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      email TEXT,
+      country TEXT,
+      device TEXT NOT NULL,
+      timezone TEXT,
+      submitted_at_riga TEXT NOT NULL
+    )`
+  ).run();
+}
+
+function getRigaTimestamp() {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Riga',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date());
+}
+
+async function handleArchiveVotes(request, env) {
+  await ensureArchiveVotesTable(env);
+
+  if (request.method === 'GET') {
+    const projectKey = new URL(request.url).searchParams.get('projectKey');
+    if (!ARCHIVE_PROJECT_KEYS.has(projectKey)) {
+      return new Response(JSON.stringify({ error: 'Invalid archive project.' }), { status: 400, headers: jsonHeaders });
+    }
+
+    const row = await env.DB.prepare('SELECT count FROM archive_votes WHERE project_key = ?').bind(projectKey).first();
+    return new Response(JSON.stringify({ count: Number(row?.count) || 0 }), { headers: jsonHeaders });
+  }
+
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed.' }), {
+      status: 405,
+      headers: { ...jsonHeaders, Allow: 'POST, OPTIONS' },
+    });
+  }
+
+  let projectKey;
+  try {
+    ({ projectKey } = await request.json());
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid request.' }), { status: 400, headers: jsonHeaders });
+  }
+
+  if (typeof projectKey !== 'string' || !ARCHIVE_PROJECT_KEYS.has(projectKey)) {
+    return new Response(JSON.stringify({ error: 'Invalid archive project.' }), { status: 400, headers: jsonHeaders });
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO archive_votes (project_key, count) VALUES (?, 1)
+     ON CONFLICT(project_key) DO UPDATE SET count = archive_votes.count + 1`
+  ).bind(projectKey).run();
+
+  return new Response(JSON.stringify({ success: true }), { headers: jsonHeaders });
+}
+
+async function handleArchiveComments(request, env) {
+  await ensureArchiveCommentsTable(env);
+
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed.' }), {
+      status: 405,
+      headers: { ...jsonHeaders, Allow: 'POST, OPTIONS' },
+    });
+  }
+
+  let projectKey;
+  let reason;
+  let email;
+  let timezone;
+  try {
+    ({ projectKey, reason, email, timezone } = await request.json());
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid request.' }), { status: 400, headers: jsonHeaders });
+  }
+
+  const normalizedReason = typeof reason === 'string' ? reason.trim().slice(0, 5000) : '';
+  const normalizedEmail = typeof email === 'string' && email.trim() ? email.trim().slice(0, 320) : null;
+  const normalizedTimezone = typeof timezone === 'string' ? timezone.slice(0, 100) : null;
+
+  if (!ARCHIVE_PROJECT_KEYS.has(projectKey) || normalizedReason.length < 6) {
+    return new Response(JSON.stringify({ error: 'Invalid archive comment.' }), { status: 400, headers: jsonHeaders });
+  }
+
+  const country = request.cf?.country || null;
+  const device = getDeviceType(request.headers.get('User-Agent') || '');
+  const submittedAt = getRigaTimestamp();
+
+  await env.DB.prepare(
+    `INSERT INTO archive_comments
+      (project_key, reason, email, country, device, timezone, submitted_at_riga)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).bind(projectKey, normalizedReason, normalizedEmail, country, device, normalizedTimezone, submittedAt).run();
+
+  return new Response(JSON.stringify({
+    success: true,
+    country,
+    device,
+    submittedAt,
+  }), { headers: jsonHeaders });
 }
 
 export default {
@@ -131,7 +266,7 @@ export default {
     }
     if (url.pathname === '/shared' && request.method === 'GET') {
       const { results } = await env.DB.prepare(
-        `SELECT id,content,absurdity_level,alias,created_at,type FROM shared_responses ORDER BY created_at DESC`
+        `SELECT id,content,absurdity_level,alias,color,img_url,country,created_at,type FROM shared_responses ORDER BY created_at DESC`
       ).all();
       return new Response(JSON.stringify(results), {
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
@@ -139,6 +274,12 @@ export default {
     }
     if (url.pathname === '/team-votes') {
       return handleTeamVotes(request, env);
+    }
+    if (url.pathname === '/archive-votes') {
+      return handleArchiveVotes(request, env);
+    }
+    if (url.pathname === '/archive-comments') {
+      return handleArchiveComments(request, env);
     }
     if (url.pathname === '/share' && request.method === 'POST') {
       return handleShare(request, env);
@@ -158,132 +299,24 @@ export default {
           });
         }
         const fullPrompt = `${ASK_AI_PROMPT_DATA.trim()} "${absurdPrompt.prompt}"`;
-        const keysEnv = env.OPENROUTER_KEYS || '';
-        const keys = keysEnv
-          .split(',')
-          .map((k) => k.trim())
-          .filter(Boolean);
-        if (keys.length === 0) {
-          console.error('No OPENROUTER_KEYS configured.');
-          return new Response(JSON.stringify({ error: 'No OPENROUTER_KEYS configured.' }), {
-            status: 500,
+        const result = await env.AI.run(CLOUDFLARE_MODEL, {
+          messages: [{ role: 'user', content: fullPrompt }],
+          max_tokens: 600,
+          temperature: 0.9,
+        });
+        const content = result?.response ?? result?.choices?.[0]?.message?.content;
+
+        if (typeof content !== 'string' || !content.trim()) {
+          console.error('Cloudflare AI returned no generated content.', result);
+          return new Response(JSON.stringify({ error: 'Cloudflare AI returned no generated content.' }), {
+            status: 502,
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
           });
         }
 
-        let lastErrorText = null;
-        const apologyRegex = /sorry|cannot fulfill|cannot comply|cannot complete|unable to comply/i;
-
-        // Helper that tries all keys with a given prompt and returns a structured result
-        async function tryWithPrompt(prompt) {
-          let lastErr = null;
-          let refused = false;
-          for (let i = 0; i < keys.length; i++) {
-            const key = keys[i];
-            const referer = referers[i] || '';
-            try {
-              const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${key}`,
-                  'Content-Type': 'application/json',
-                  Referer: referer,
-                  'X-Title': 'getdagnis',
-                },
-                body: JSON.stringify({
-                  model: 'openai/gpt-4o-mini',
-                  messages: [{ role: 'user', content: prompt }],
-                  temperature: 0.9,
-                }),
-              });
-
-              if (res.status === 429) {
-                console.warn(`Key ${key.slice(0, 12)}... rate limited.`);
-                lastErr = await res.text().catch(() => null);
-                continue;
-              }
-
-              let json = null;
-              try {
-                json = await res.json();
-              } catch (parseErr) {
-                const txt = await res.text().catch(() => null);
-                console.error(`Key ${key.slice(0, 12)} returned non-JSON response:`, txt || parseErr);
-                lastErr = txt || String(parseErr);
-                if (txt && apologyRegex.test(txt)) refused = true;
-                continue;
-              }
-
-              if (json.choices?.[0]?.message?.content) {
-                const content = json.choices[0].message.content;
-                if (apologyRegex.test(content)) {
-                  console.warn(`Key ${key.slice(0, 12)} returned refusal content:`, content);
-                  refused = true;
-                  lastErr = content;
-                  continue;
-                }
-
-                return { ok: true, content };
-              }
-
-              if (json.error || json.message) {
-                const txt = JSON.stringify(json);
-                console.warn(`Key ${key.slice(0, 12)} returned provider error:`, json);
-                lastErr = txt;
-                if (apologyRegex.test(txt)) refused = true;
-                continue;
-              }
-            } catch (err) {
-              console.error(`Key ${key.slice(0, 12)}... failed`, err);
-              lastErr = String(err);
-              continue;
-            }
-          }
-
-          return { ok: false, refused, lastErr };
-        }
-
-        // Try original prompt
-        const first = await tryWithPrompt(fullPrompt);
-        if (first.ok) {
-          return new Response(JSON.stringify({ content: first.content }), {
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-          });
-        }
-
-        // If provider refused, attempt one gentle retry with an explicitly fictionalized prompt
-        if (first.refused) {
-          console.warn('Provider refused first prompt; attempting a fictionalized retry');
-          const sanitizedPrompt = `This is a fictional spy-story. The subject should be treated as a fictional person and no real-world allegations should be made. ${fullPrompt}`;
-          const retry = await tryWithPrompt(sanitizedPrompt);
-          if (retry.ok) {
-            return new Response(JSON.stringify({ content: retry.content }), {
-              headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-            });
-          }
-
-          return new Response(
-            JSON.stringify({
-              error: 'Provider refused to fulfill the request.',
-              suggestion: 'Please try again (the model may be transiently unable to fulfill that prompt).',
-              details: first.lastErr,
-              retryAttempted: true,
-            }),
-            {
-              status: 503,
-              headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-            }
-          );
-        }
-
-        // Otherwise report rate-limit/failure
-        return new Response(
-          JSON.stringify({ error: 'All API keys failed or were rate-limited.', details: first.lastErr }),
-          {
-            status: 429,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-          }
-        );
+        return new Response(JSON.stringify({ content }), {
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
       } catch (err) {
         console.error('Parse error or bad JSON:', err);
         return new Response(JSON.stringify({ error: 'Invalid request.', details: String(err) }), {

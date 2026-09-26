@@ -2,6 +2,9 @@ name = "getdagnis-worker-prod"
 main = "src/index.js"
 compatibility_date = "2026-01-06"
 
+[ai]
+binding = "AI"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "getdagnis-db"
