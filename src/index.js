@@ -332,7 +332,8 @@ export default {
         const fullPrompt = `${ASK_AI_PROMPT_DATA.trim()} "${absurdPrompt.prompt}"`;
         const result = await env.AI.run(CLOUDFLARE_MODEL, {
           messages: [{ role: 'user', content: fullPrompt }],
-          max_tokens: 600,
+          chat_template_kwargs: { enable_thinking: false },
+          max_tokens: 800,
           temperature: 0.9,
         });
         const content = result?.response ?? result?.choices?.[0]?.message?.content;

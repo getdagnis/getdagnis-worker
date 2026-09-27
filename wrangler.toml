@@ -9,3 +9,10 @@ binding = "AI"
 binding = "DB"
 database_name = "getdagnis-db"
 database_id = "5240cfc7-8fbf-4990-8d07-1887515b3dac"
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
